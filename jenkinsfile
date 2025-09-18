@@ -1,16 +1,15 @@
 pipeline {
-    agent any
-
-    tools {
-        // Utilisation de Maven et Java 17
-        maven "maven"      
-        jdk "jdk17"
+    agent {
+        docker { 
+            image 'maven:3.9.3-eclipse-temurin-17' 
+            args '-u root:root'  // pour avoir les permissions si besoin
+        }
     }
 
     environment {
         DOCKER_HUB_USER = "bintabdallah"
         IMAGE_NAME = "javajenkins"
-        DEPLOY_PORT = "8080"   
+        DEPLOY_PORT = "8080"
     }
 
     stages {
@@ -19,6 +18,14 @@ pipeline {
                 git branch: 'main', 
                     url: 'https://github.com/BintAbdalla/javajenkins.git',
                     credentialsId: 'github-credentials-java'
+            }
+        }
+
+        stage('Check Java & Maven') {
+            steps {
+                sh 'java -version'
+                sh 'javac -version'
+                sh 'mvn -version'
             }
         }
 
@@ -54,45 +61,29 @@ pipeline {
 
                     sh """
                         if [ \$(docker ps -aq -f name=${IMAGE_NAME}) ]; then
-                            echo "Arrêt du container existant..."
                             docker stop ${IMAGE_NAME} || true
                             docker rm ${IMAGE_NAME} || true
-                            echo "Container existant supprimé"
                         fi
                     """
 
                     def deployPort = env.DEPLOY_PORT
-
-                    def port8080Used = sh(
-                        script: "lsof -i:8080 > /dev/null 2>&1",
-                        returnStatus: true
-                    ) == 0
-
+                    def port8080Used = sh(script: "lsof -i:8080 > /dev/null 2>&1", returnStatus: true) == 0
                     if (port8080Used) {
-                        echo "⚠️ Port 8080 occupé, tentative sur le port 8081"
-                        def port8081Used = sh(
-                            script: "lsof -i:8081 > /dev/null 2>&1",
-                            returnStatus: true
-                        ) == 0
-                        
+                        def port8081Used = sh(script: "lsof -i:8081 > /dev/null 2>&1", returnStatus: true) == 0
                         deployPort = port8081Used ? "8082" : "8081"
-                        echo "📍 Déploiement sur le port ${deployPort}"
                     }
 
+                    echo "📍 Déploiement sur le port ${deployPort}"
+
                     sh """
-                        echo "Lancement du container Java sur le port ${deployPort}..."
                         docker run -d -p ${deployPort}:8080 --name ${IMAGE_NAME} ${DOCKER_HUB_USER}/${IMAGE_NAME}:latest
-                        
-                        echo "Attente du démarrage du container..."
                         sleep 5
-                        
                         if docker ps | grep ${IMAGE_NAME} > /dev/null; then
                             echo "✅ Container Java démarré avec succès"
-                            docker ps | grep ${IMAGE_NAME}
                             docker logs ${IMAGE_NAME} --tail 10
                         else
                             echo "❌ Erreur lors du démarrage du container"
-                            docker logs ${IMAGE_NAME} 2>/dev/null || echo "Aucun log disponible"
+                            docker logs ${IMAGE_NAME} || true
                             exit 1
                         fi
                     """
@@ -123,12 +114,10 @@ pipeline {
         failure {
             echo '❌ Pipeline échoué !'
             script {
-                echo "🧹 Nettoyage des containers en cas d'échec..."
                 sh """
                     if [ \$(docker ps -aq -f name=${IMAGE_NAME}) ]; then
                         docker stop ${IMAGE_NAME} || true
                         docker rm ${IMAGE_NAME} || true
-                        echo "Nettoyage terminé"
                     fi
                 """
             }
